@@ -49,30 +49,21 @@ ui <- f7Page(
         )
       ),
       
-      # --- แท็บที่ 2: ตารางจอง ---
+      # --- แท็บที่ 2: ตารางจอง (ปรับปรุงใหม่) ---
       f7Tab(
         title = "จองเลข",
         tabName = "Booking",
         icon = f7Icon("square_grid_3x2_fill"),
-        
         f7BlockTitle("เลือกหมายเลขที่ต้องการ", size = "medium"),
+        
         f7Block(
-          style = "overflow-y: auto; max-height: 400px; background: #ffffff; padding: 10px; border-radius: 15px; border: 1px solid #ddd;",
+          style = "overflow-y: auto; max-height: 450px; background: #ffffff; 
+                      padding: 10px; border-radius: 15px; border: 1px solid #ddd; text-align: center;",
           uiOutput("lotto_grid")
         ),
         
-        f7List(
-          inset = TRUE,
-          f7SmartSelect(
-            inputId = "user_name",
-            label = "เลือกชื่อผู้จอง",
-            choices = c("ปู", "ปุ้น", "ป๊อบ", "ดอนนี่", "นาถ", "ตี๋", "อ้อ", "เอ", "เจ๊นก", "บอย", "เก๋", "โจ๊ก", "เบนซ์", "บอม", "ศรีกุล", "แอนเลอร์", "หน่อย", "โอเล่", "เก้อ", "หาญ", "เกมส์", "รวีวรรณ", "พจน์", "เอี่ยว"),
-            openIn = "sheet"
-          )
-        ),
         f7Block(
-          # แก้จุดที่ 2: ตรงนี้ใช้ fill = TRUE ได้เพราะเป็นปุ่มเดี่ยว
-          f7Button(inputId = "confirm_booking", label = "ยืนยันการจอง", color = "green", fill = TRUE)
+          f7Button(inputId = "pre_confirm", label = "ยืนยันการเลือก", color = "green", fill = TRUE)
         )
       ),
       
@@ -92,15 +83,20 @@ server <- function(input, output, session) {
   
   # ข้อมูลทดสอบ (Static Data)
   raw_data <- list(
-    "ปู" = c("31", "35", "38", "67", "83", "85"), "ปุ้น" = c("06", "18", "25", "52", "60", "68", "81", "86"),
-    "ป๊อบ" = c("05", "11", "15", "29", "44", "48", "50", "51", "84", "92"), "ดอนนี่" = c("12", "20", "22", "57"),
-    "นาถ" = c("26", "47", "64", "72"), "ตี๋" = c("08", "24", "42", "56", "65", "74", "80"),
-    "อ้อ" = c("40", "61", "87"), "เอ" = c("17", "70", "71", "73"), "เจ๊นก" = c("09", "27"),
-    "บอย" = c("01", "32", "59", "95"), "เก๋" = c("02", "69", "82", "94"), "โจ๊ก" = c("03", "13", "23", "88", "89", "98"),
-    "เบนซ์" = c("37", "53", "75", "93"), "บอม" = c("91", "96", "97", "99"), "ศรีกุล" = c("39", "49"),
-    "แอนเลอร์" = c("33", "76", "77", "78", "79"), "หน่อย" = c("10", "28"), "โอเล่" = c("46"),
-    "เก้อ" = c("45", "54", "66"), "หาญ" = c("07", "55", "58"), "เกมส์" = c("00", "04", "14", "16"),
-    "รวีวรรณ" = c("43", "62", "63", "90"), "พจน์" = c("19", "36"), "เอี่ยว" = c("21", "30", "34", "41")
+    "ดอนนี่" = c("12", "20", "22", "57"),
+    "นาถ" = c("26", "47", "64", "72"), 
+    "ตี๋" = c("08", "24", "42", "56", "65", "74", "80"),
+    "อ้อ" = c("40", "61", "87"),
+    "เอ" = c("17", "70", "71", "73"),
+    "เจ๊นก" = c("09", "27"),
+    "บอย" = c("01", "32", "59", "95"), 
+    "เก๋" = c("02", "69", "82", "94"),
+    "โจ๊ก" = c("03", "13", "23", "88", "89", "98"),
+    "บอม" = c("91", "96", "97", "99"), 
+    "ศรีกุล" = c("39", "49"),
+    "เก้อ" = c("45", "54", "66"),
+    "พจน์" = c("19", "36"),
+    "เอี่ยว" = c("21", "30", "34", "41")
   )
   paid_users <- c("เก้อ", "หาญ", "รวีวรรณ", "เอี่ยว")
   
@@ -109,31 +105,134 @@ server <- function(input, output, session) {
     mutate(number = sprintf("%02d", as.numeric(as.character(number))),
            status = if_else(name %in% paid_users, "จ่ายแล้ว", ""))
   
-  booked_data <- reactiveVal(init_df)
+  # 1. ข้อมูลการจองหลัก (จากข้อความเดิมของคุณ)
+  booked_data <- reactiveVal(init_df) # init_df คือตัวเดิมที่เรามี
   
-  # 1. Render ตารางเลข 00-99 (แก้ไขเรื่องสีและ Outline)
+  # 2. เก็บรายการที่ User กำลังจิ้มเลือก (ยังไม่ได้บันทึกลง DB)
+  selected_nums <- reactiveVal(character(0))
+  
+  # 3. Render ตารางเลข 00-99 (เน้นสีที่ตัวเลข/Label)
   output$lotto_grid <- renderUI({
     data <- booked_data()
+    selection <- selected_nums()
+    
     lapply(0:99, function(i) {
       num_str <- sprintf("%02d", i)
       is_booked <- num_str %in% data$number
+      is_selecting <- num_str %in% selection
       booker <- if(is_booked) as.character(data$name[data$number == num_str]) else ""
       
+      # เปลี่ยนสี Font ของตัวเลขบนปุ่ม
+      # ถ้าจองแล้ว = แดง, กำลังเลือก = ส้ม, ว่าง = ขาว
+      text_color <- if(is_booked) "#A9A9A9" else if(is_selecting) "#FF9500" else "#FFFFFF"
+      
+      # ความหนาของตัวอักษร
+      text_weight <- if(is_booked || is_selecting) "bold" else "normal"
+      
       tags$div(
-        style = "display: inline-block; width: 18%; margin: 1%; text-align: center; vertical-align: top;",
+        style = "display: inline-block; width: 17%; margin: 1%; text-align: center; vertical-align: top;",
         f7Button(
-          inputId = paste0("num_", num_str),
-          label = num_str,
-          # ถ้าจองแล้วใช้สีเทา (gray) ถ้าว่างใช้สีเขียว (green)
-          color = if(is_booked) "gray" else "green",
-          fill = TRUE # ใช้แบบทึบทั้งคู่เพื่อความสม่ำเสมอและเลี่ยง Error
+          inputId = paste0("btn_", num_str),
+          # ใช้ tags$span เพื่อคุมสีของตัวเลข label
+          label = tags$span(num_str, style = paste0("color:", text_color, "; font-weight:", text_weight, "; font-size: 1.2em;")),
+          color = "green", # ใช้พื้นหลังเขียวเหมือนกันหมด
+          fill = TRUE
         ),
-        tags$small(style = "font-size: 0.6em; display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #555;", booker)
+        tags$small(
+          style = paste0("font-size: 0.6em; display: block; height: 1.2em; overflow: hidden; color:", 
+                         if(is_booked) "#A9A9A9" else "#FF9500", ";"), 
+          if(is_booked) booker else if(is_selecting) "เลือกอยู่" else ""
+        )
       )
     })
   })
   
-  # 2. Render ตารางชำระเงิน
+  # 4. Logic การกดปุ่มเลข (Toggle Selection)
+  lapply(0:99, function(i) {
+    num_str <- sprintf("%02d", i)
+    observeEvent(input[[paste0("btn_", num_str)]], {
+      data <- booked_data()
+      # ถ้าเลขยังไม่ถูกจอง ให้ทำการ toggle selection
+      if (!(num_str %in% data$number)) {
+        current <- selected_nums()
+        if (num_str %in% current) {
+          selected_nums(setdiff(current, num_str))
+        } else {
+          selected_nums(c(current, num_str))
+        }
+      }
+    })
+  })
+  
+  # 5. เมื่อกดปุ่ม "ยืนยันการเลือก" -> เปิด Modal
+  observeEvent(input$pre_confirm, {
+    selection <- selected_nums()
+    
+    if (length(selection) == 0) {
+      f7Noti(text = "กรุณาเลือกอย่างน้อย 1 หมายเลข", icon = f7Icon("exclamation_triangle"), color = "red")
+    } else {
+      # สร้าง Modal (Popup)
+      f7Popup(
+        id = "popup_booking",
+        title = "ยืนยันการจอง",
+        f7Block(
+          strong(paste("คุณเลือกทั้งหมด", length(selection), "หมายเลข:")),
+          p(paste(sort(selection), collapse = ", "), style = "font-size: 1.2em; color: #2196f3; font-weight: bold;")
+        ),
+        f7List(
+          inset = TRUE,
+          f7SmartSelect(
+            inputId = "final_user_name",
+            label = "ระบุชื่อผู้จอง",
+            choices = c("ปู", "ปุ้น", "ป๊อบ", "ดอนนี่", "นาถ", "ตี๋", "อ้อ", "เอ", "เจ๊นก", "บอย", "เก๋", "โจ๊ก", "เบนซ์", "บอม", "ศรีกุล", "แอนเลอร์", "หน่อย", "โอเล่", "เก้อ", "หาญ", "เกมส์", "รวีวรรณ", "พจน์", "เอี่ยว"),
+            openIn = "sheet"
+          )
+        ),
+        f7Block(
+          f7Row(
+            f7Button(inputId = "cancel_booking", label = "ยกเลิก", color = "red"),
+            f7Button(inputId = "final_confirm", label = "ตกลง", color = "green", fill = TRUE)
+          )
+        )
+      )
+    }
+  })
+  
+  # 6. Logic เมื่อกดปุ่ม "ตกลง" ใน Modal เพื่อบันทึกการจองใหม่
+  observeEvent(input$final_confirm, {
+    new_nums <- selected_nums()
+    user <- input$final_user_name
+    
+    if (length(new_nums) > 0) {
+      # สร้างข้อมูลใหม่เพื่อเอาไปต่อท้าย data เดิม
+      new_data <- data.frame(
+        number = new_nums,
+        name = user,
+        status = "", # ยังไม่จ่าย
+        stringsAsFactors = FALSE
+      )
+      
+      # อัปเดตค่า booked_data
+      updated_df <- bind_rows(booked_data(), new_data)
+      booked_data(updated_df)
+      
+      # ล้างค่าที่เลือกไว้ และปิด Modal
+      selected_nums(character(0))
+      f7Popup(id = "popup_booking", action = "close")
+      
+      # แจ้งเตือนสวยๆ
+      f7Toast(text = paste("จองเลขให้คุณ", user, "เรียบร้อย!"), position = "bottom", color = "green")
+    }
+  })  
+  
+  # 7. ปิด Modal เมื่อยกเลิก
+  observeEvent(input$cancel_booking, {
+    f7Popup(id = "popup_booking", action = "close")
+  })
+
+  
+  
+  # [2. Render ตารางชำระเงิน]
   output$payment_table <- renderUI({
     data <- booked_data()
     summary_data <- data %>%
