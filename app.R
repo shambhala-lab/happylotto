@@ -3,8 +3,42 @@ library(shinyMobile)
 library(dplyr)
 library(tidyr)
 
-# งวดวันที่
-current_period <- "01 ก.พ. 69"
+library(pool)
+library(RPostgres) # ต้องมีเพื่อให้ dbPool รู้ว่าจะใช้ Engine ตัวไหน
+
+source("secrets.R")
+
+# สร้าง Pool (ใช้วิธีเรียกผ่าน pool แทน DBI)
+pool <- dbPool(
+  drv = Postgres(),
+  host = db_config$host,
+  dbname = db_config$dbname,
+  user = db_config$user,
+  password = db_config$pass,
+  port = db_config$port,
+  idleTimeout = 60000, # 1 นาทีปิดท่อ
+  minSize = 0,         # เมื่อไม่มีคนใช้ ไม่ต้องคาเครื่องไว้เลย ให้เหลือ 0
+  maxSize = 3          # แอปนี้ใช้คนเดียวหรือกลุ่มเล็ก 3 ท่อก็เหลือเฟือครับ  
+)
+
+
+# ทดสอบดึงข้อมูล "เลขว่าง" ที่เราคุยกันเมื่อกี้
+# test_query <- function() {
+#   con <- get_db_conn()
+#   on.exit(dbDisconnect(con)) # ปิดการเชื่อมต่ออัตโนมัติเมื่อรันเสร็จ
+#   
+#   query <- "
+#     SELECT all_nums.num
+#     FROM (SELECT LPAD(generate_series(0, 99)::text, 2, '0') AS num) all_nums
+#     LEFT JOIN lottery_bookings b ON all_nums.num = b.lotto_number AND b.period_id = 3
+#     WHERE b.lotto_number IS NULL
+#     ORDER BY all_nums.num;
+#   "
+#   dbGetQuery(con, query)
+# }
+
+
+
 
 ui <- f7Page(
   title = "ลุ้นหวยกัน เพื่อนปันสุข",
@@ -29,24 +63,8 @@ ui <- f7Page(
           inset = TRUE,
           "ทำบุญให้โรงพยาบาลต่างๆ และ อื่นๆ"
         ),
-        f7Card(
-          title = paste("เลขท้าย 2 ตัว งวดวันที่", current_period),
-          f7Badge("ตัวละ 50 บาท", color = "orange"),
-          br(), br(),
-          "บัญชีจ่าย โอนเข้าบัญชี:",
-          f7List(
-            mode = "media", # แก้จุดที่ 1
-            f7ListItem(
-              title = "นายปฐมพงศ์ สุขแสนโชติ", 
-              subtitle = "219-1-49993-4 ธ.กรุงศรี",
-              media = f7Icon("creditcard_fill")
-            )
-          ),
-          footer = span(
-            "ผู้ถูกรางวัลได้รับเงินสดสูงสุด 3,750 บาท (1:75) ",
-            tags$small(style="color:red; font-weight:bold;", "หักทำบุญ 1,250 บาท")
-          )
-        )
+        # ดึงเฉพาะ Card มาเสียบตรงนี้
+        uiOutput("intro_card_db") 
       ),
       
       # --- แท็บที่ 2: ตารางจอง (ปรับปรุงใหม่) ---
@@ -110,10 +128,101 @@ server <- function(input, output, session) {
   
   # 2. เก็บรายการที่ User กำลังจิ้มเลือก (ยังไม่ได้บันทึกลง DB)
   selected_nums <- reactiveVal(character(0))
+
   
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  # ฟังก์ชันสำหรับดึงวันที่งวดปัจจุบัน (Reactive)
+  get_current_period_name <- reactive({
+    # ไม่ต้องมี get_db_conn() และ dbDisconnect() แล้ว
+    res <- dbGetQuery(pool, "SELECT display_name FROM lottery_periods WHERE status = 'กำลังเปิดจอง' LIMIT 1")
+    
+    if(nrow(res) > 0) res$display_name else "ไม่มีงวดที่เปิดจอง"
+    
+  })
+  
+  # Render ตัว Card โดยใช้ค่าที่ดึงมา
+  output$intro_card_db <- renderUI({
+    
+    current_period <- get_current_period_name()
+    
+    f7Card(
+      title = paste0("เลขท้าย 2 ตัว งวดวัน", current_period),
+      f7Badge("ตัวละ 50 บาท", color = "orange"),
+      
+      br(), br(),
+      
+      "บัญชีจ่าย โอนเข้าบัญชี:",
+      
+      f7List(
+        mode = "media",
+        f7ListItem(
+          title = "นายปฐมพงศ์ สุขแสนโชติ", 
+          subtitle = "219-1-49993-4 ธ.กรุงศรี",
+          media = f7Icon("creditcard_fill")
+        )
+      ),
+      footer = span(
+        "ผู้ถูกรางวัลได้รับเงินสดสูงสุด 3,750 บาท (1:75) ",
+        tags$small(style="color:red; font-weight:bold;", "หักทำบุญ 1,250 บาท")
+      )
+    )
+  })  
+
+  
+  
+  
+  
+  
+  
+  
+  # ดึงข้อมูลการจองปัจจุบัน (เปลี่ยนชื่อจาก booked_data เดิม)
+  booked_db <- reactive({
+    # ใส่invalidateLater เพื่อให้แอปรีเฟรชข้อมูลอัตโนมัติทุก 30 วินาที (ถ้าต้องการ)
+    # invalidateLater(30000) 
+    
+    query <- "
+    SELECT b.lotto_number AS number, m.member_name AS name
+    FROM lottery_bookings b
+    JOIN lottery_members m ON b.member_id = m.id
+    WHERE b.period_id = 3; -- งวด 1 ก.พ. 69
+  "
+    dbGetQuery(pool, query)
+  })  
+  
+  # ในเซิร์ฟเวอร์ ดึงรายชื่อเพื่อนมาทำ choices  
+  member_list <- reactive({
+    res <- dbGetQuery(pool, "SELECT id, member_name FROM lottery_members ORDER BY member_name ASC")
+    # ทำเป็น Named Vector: c("ชื่อ" = id) เพื่อให้ส่งค่า id กลับไปบันทึก
+    setNames(res$id, res$member_name)
+  })  
+  
+    
   # 3. Render ตารางเลข 00-99 (เน้นสีที่ตัวเลข/Label)
   output$lotto_grid <- renderUI({
-    data <- booked_data()
+    data <- booked_db()
     selection <- selected_nums()
     
     lapply(0:99, function(i) {
@@ -151,8 +260,11 @@ server <- function(input, output, session) {
   lapply(0:99, function(i) {
     num_str <- sprintf("%02d", i)
     observeEvent(input[[paste0("btn_", num_str)]], {
-      data <- booked_data()
-      # ถ้าเลขยังไม่ถูกจอง ให้ทำการ toggle selection
+      
+      # เปลี่ยนมาดึงข้อมูลจาก Reactive ที่ต่อกับ DB
+      data <- booked_db() 
+      
+      # ถ้าเลขยังไม่ถูกจอง (ไม่อยู่ใน DB) ให้ทำการ toggle selection
       if (!(num_str %in% data$number)) {
         current <- selected_nums()
         if (num_str %in% current) {
@@ -160,6 +272,9 @@ server <- function(input, output, session) {
         } else {
           selected_nums(c(current, num_str))
         }
+      } else {
+        # (Optional) ถ้าอยากให้กดเลขที่มีคนจองแล้วมีเสียงเตือนหรือ Toast ก็ใส่ตรงนี้ได้ครับ
+        f7Toast(text = "เลขนี้มีเจ้าของแล้วจ้า", position = "bottom", color = "red")
       }
     })
   })
@@ -181,10 +296,11 @@ server <- function(input, output, session) {
         ),
         f7List(
           inset = TRUE,
+          # ใน f7Popup (ตรง Smart Select) ให้แก้ choices เป็น:
           f7SmartSelect(
-            inputId = "final_user_name",
+            inputId = "final_user_id", # เปลี่ยนเป็นส่ง id
             label = "ระบุชื่อผู้จอง",
-            choices = c("ปู", "ปุ้น", "ป๊อบ", "ดอนนี่", "นาถ", "ตี๋", "อ้อ", "เอ", "เจ๊นก", "บอย", "เก๋", "โจ๊ก", "เบนซ์", "บอม", "ศรีกุล", "แอนเลอร์", "หน่อย", "โอเล่", "เก้อ", "หาญ", "เกมส์", "รวีวรรณ", "พจน์", "เอี่ยว"),
+            choices = member_list(),    # ใช้ค่าจาก reactive
             openIn = "sheet"
           )
         ),
@@ -201,29 +317,37 @@ server <- function(input, output, session) {
   # 6. Logic เมื่อกดปุ่ม "ตกลง" ใน Modal เพื่อบันทึกการจองใหม่
   observeEvent(input$final_confirm, {
     new_nums <- selected_nums()
-    user <- input$final_user_name
+    m_id <- as.integer(input$final_user_id) # รับเป็น ID มาเลย
     
     if (length(new_nums) > 0) {
-      # สร้างข้อมูลใหม่เพื่อเอาไปต่อท้าย data เดิม
-      new_data <- data.frame(
-        number = new_nums,
-        name = user,
-        status = "", # ยังไม่จ่าย
-        stringsAsFactors = FALSE
-      )
+      # สร้าง SQL ชุดเดียวเพื่อ INSERT หลายแถว (ป้องกัน SQL Injection)
+      # หมายเหตุ: ในโปรเจกต์จริงควรใช้ sqlInterpolate แต่เบื้องต้นทำแบบนี้ให้เห็นภาพครับ
       
-      # อัปเดตค่า booked_data
-      updated_df <- bind_rows(booked_data(), new_data)
-      booked_data(updated_df)
+      con <- poolCheckout(pool) # หยิบการเชื่อมต่อออกมาทำงานพิเศษ
+      on.exit(poolReturn(con))  # ทำเสร็จแล้วคืนท่อ
       
-      # ล้างค่าที่เลือกไว้ และปิด Modal
-      selected_nums(character(0))
-      f7Popup(id = "popup_booking", action = "close")
-      
-      # แจ้งเตือนสวยๆ
-      f7Toast(text = paste("จองเลขให้คุณ", user, "เรียบร้อย!"), position = "bottom", color = "green")
+      # เริ่มต้น Transaction เพื่อความปลอดภัย (ถ้าพัง ให้พังทั้งหมด ไม่ลงค้างๆ คาๆ)
+      dbBegin(con)
+      tryCatch({
+        for(num in new_nums) {
+          dbExecute(con, 
+                    "INSERT INTO lottery_bookings (period_id, member_id, lotto_number) VALUES (3, $1, $2)",
+                    params = list(m_id, num)
+          )
+        }
+        dbCommit(con)
+        
+        # ล้างค่าและปิด Popup
+        selected_nums(character(0))
+        f7Popup(id = "popup_booking", action = "close")
+        f7Toast(text = "บันทึกข้อมูลลงฐานข้อมูลเรียบร้อย!", color = "green")
+        
+      }, error = function(e) {
+        dbRollback(con)
+        f7Noti(text = paste("เกิดข้อผิดพลาด:", e$message), color = "red")
+      })
     }
-  })  
+  })
   
   # 7. ปิด Modal เมื่อยกเลิก
   observeEvent(input$cancel_booking, {
@@ -231,34 +355,63 @@ server <- function(input, output, session) {
   })
 
   
-  
+
+
   # [2. Render ตารางชำระเงิน]
   output$payment_table <- renderUI({
-    data <- booked_data()
-    summary_data <- data %>%
+    # 1. ดึงข้อมูลจาก Reactive ที่เชื่อมกับ Database
+    # แนะนำ: ถ้าอยากให้ละเอียดขึ้น ให้แก้ SQL ใน booked_db ให้ดึงคอลัมน์ payment_status มาด้วย
+    # หรือจะเขียน Query ใหม่เฉพาะแท็บนี้เลยก็ได้ครับ
+    
+    query <- "
+    SELECT m.member_name AS name, b.lotto_number AS number, b.payment_status
+    FROM lottery_bookings b
+    JOIN lottery_members m ON b.member_id = m.id
+    WHERE b.period_id = 3
+  "
+    raw_data <- dbGetQuery(pool, query)
+    
+    if (nrow(raw_data) == 0) {
+      return(f7Block(em("ยังไม่มีข้อมูลการจองในงวดนี้")))
+    }
+    
+    # 2. ใช้ dplyr สรุปผลเหมือนเดิม
+    summary_data <- raw_data %>%
       group_by(name) %>%
       summarise(
         nums = paste(sort(number), collapse = "  "),
         count = n(),
-        pay_status = first(status)
+        # ใน DB เราเก็บเป็น boolean (T/F) เลยต้องเช็คค่าแบบนี้ครับ
+        is_paid = any(payment_status == TRUE) 
       ) %>%
-      arrange(desc(pay_status), name)
+      arrange(is_paid, name) # เรียงคนยังไม่จ่ายขึ้นก่อน
     
+    # 3. สร้าง UI List
     f7List(
       inset = TRUE,
-      mode = "media", # แก้จุดที่ 4: ใส่เพื่อให้ subtitle ทำงานได้
+      mode = "media",
       lapply(1:nrow(summary_data), function(i) {
         f7ListItem(
           title = paste0(summary_data$name[i], " (", summary_data$count[i], ")"),
           subtitle = summary_data$nums[i],
-          right = if(summary_data$pay_status[i] == "จ่ายแล้ว") 
+          # แสดง Badge ตามสถานะใน Database
+          right = if(summary_data$is_paid[i]) 
             f7Badge("จ่ายแล้ว", color = "blue") 
           else 
-            ""
+            f7Badge("ค้างชำระ", color = "red")
         )
       })
     )
   })
+  
+  
+  
+  # เมื่อ User ปิด Browser ให้หยุดแอปทันที (เพื่อประหยัดชั่วโมง)
+  session$onSessionEnded(function() {
+    stopApp()
+  })
+
+    
 }
 
 shinyApp(ui, server)
