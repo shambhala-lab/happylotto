@@ -81,7 +81,12 @@ ui <- f7Page(
         ),
         
         f7Block(
-          f7Button(inputId = "pre_confirm", label = "ยืนยันการเลือก", color = "green", fill = TRUE)
+          f7Row(
+            # ปุ่มเช็คเลขว่าง
+            f7Button(inputId = "check_available", label = "เช็คเลขว่าง", color = "blue", fill = TRUE),
+            # ปุ่มยืนยันเดิม
+            f7Button(inputId = "pre_confirm", label = "ยืนยันการเลือก", color = "green", fill = TRUE)
+          )          
         )
       ),
       
@@ -335,17 +340,21 @@ server <- function(input, output, session) {
                     params = list(m_id, num)
           )
         }
+        
         dbCommit(con)
+        
+        # --- จุดสำคัญ: ดีดนิ้วเรียก Trigger เพื่อสั่งให้โหลดข้อมูลใหม่ ---
+        db_trigger(db_trigger() + 1)
         
         # ล้างค่าและปิด Popup
         selected_nums(character(0))
         f7Popup(id = "popup_booking", action = "close")
-        f7Toast(text = "บันทึกข้อมูลลงฐานข้อมูลเรียบร้อย!", color = "green")
-        
+        f7Toast(text = "บันทึกสำเร็จ!", color = "green")      
       }, error = function(e) {
         dbRollback(con)
-        f7Noti(text = paste("เกิดข้อผิดพลาด:", e$message), color = "red")
+        f7Toast(text = paste("เกิดข้อผิดพลาด:", e$message), color = "red")
       })
+      
     }
   })
   
@@ -355,7 +364,30 @@ server <- function(input, output, session) {
   })
 
   
+  observeEvent(input$check_available, {
+    data <- booked_db()
+    all_nums <- sprintf("%02d", 0:99)
+    booked_nums <- data$number
+    available_nums <- setdiff(all_nums, booked_nums)
+    
+    f7Popup(
+      id = "popup_available",
+      title = paste0("เลขว่าง (", length(available_nums), ")"),
+      f7Block(
+        style = "text-align: left; background: #f9f9f9; padding: 15px; border-radius: 8px;",
+        # วนลูปสร้างตัวเลขแบบคุมระยะห่าง
+        lapply(available_nums, function(n) {
+          tags$span(
+            n,
+            style = "display: inline-block; width: 35px; margin-bottom: 10px; 
+                   font-family: monospace; font-size: 1.2em; color: #2196f3; font-weight: bold;"
+          )
+        })
+      )
+    )
+  })
 
+  
 
   # [2. Render ตารางชำระเงิน]
   output$payment_table <- renderUI({
