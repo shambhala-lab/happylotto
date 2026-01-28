@@ -289,7 +289,7 @@ server <- function(input, output, session) {
     selection <- selected_nums()
     
     if (length(selection) == 0) {
-      f7Noti(text = "กรุณาเลือกอย่างน้อย 1 หมายเลข", icon = f7Icon("exclamation_triangle"), color = "red")
+      f7Notif(text = "กรุณาเลือกอย่างน้อย 1 หมายเลข", icon = f7Icon("exclamation_triangle"), color = "red")
     } else {
       # สร้าง Modal (Popup)
       f7Popup(
@@ -332,8 +332,11 @@ server <- function(input, output, session) {
       on.exit(poolReturn(con))  # ทำเสร็จแล้วคืนท่อ
       
       # เริ่มต้น Transaction เพื่อความปลอดภัย (ถ้าพัง ให้พังทั้งหมด ไม่ลงค้างๆ คาๆ)
-      dbBegin(con)
+
       tryCatch({
+        
+        dbBegin(con)
+                
         for(num in new_nums) {
           dbExecute(con, 
                     "INSERT INTO lottery_bookings (period_id, member_id, lotto_number) VALUES (3, $1, $2)",
