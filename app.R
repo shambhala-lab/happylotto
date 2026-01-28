@@ -372,7 +372,9 @@ server <- function(input, output, session) {
     
     f7Popup(
       id = "popup_available",
+      swipeToClose = TRUE,	
       title = paste0("เลขว่าง (", length(available_nums), ")"),
+      
       f7Block(
         style = "text-align: left; background: #f9f9f9; padding: 15px; border-radius: 8px;",
         # วนลูปสร้างตัวเลขแบบคุมระยะห่าง
