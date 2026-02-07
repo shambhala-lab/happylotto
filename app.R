@@ -289,7 +289,7 @@ server <- function(input, output, session) {
         id = "popup_booking",
         title = "ยืนยันการจอง",
         swipeToClose = TRUE,
-        page = TRUE,
+        page = FALSE,
         
         # --- จุดที่เปลี่ยน: ใช้ uiOutput แทนการเขียนข้อความตรงๆ ---
         uiOutput("booking_summary_ui"), 
@@ -619,5 +619,6 @@ server <- function(input, output, session) {
   
     
 }
+
 
 shinyApp(ui, server)
