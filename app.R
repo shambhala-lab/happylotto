@@ -182,17 +182,18 @@ server <- function(input, output, session) {
           media = f7Icon("creditcard_fill")
         )
       ),
+      
+      br(), br(),
+      
+      "ผู้ถูกรางวัลได้รับเงินสดสูงสุด 3,750 บาท (1:75) ",
+      
+      br(), br(),
+            
       footer = span(
-        "ผู้ถูกรางวัลได้รับเงินสดสูงสุด 3,750 บาท (1:75) ",
-        tags$small(style="color:red; font-weight:bold;", "หักทำบุญ 1,250 บาท")
+        tags$small(style="color:red; font-weight:bold;", "**หมายเหตุ** หักทำบุญ 1,250 บาท")
       )
     )
-  })  
-
-  
-  
-  
-  
+  })
 
   
   
@@ -473,8 +474,8 @@ server <- function(input, output, session) {
             f7Dialog(
               id = paste0("dialog_pay_", m_id),
               title = "ยืนยันการชำระเงิน",
-              text = paste0("คุณ ", m_name, " มียอดจอง ", pending, " ใบ\n",
-                            "รวมยอดเงิน: ", pending * 50, " บาท"),
+              text = paste0("คุณ ", m_name, " มียอดจอง ", pending, " ใบ ",
+                            "(", pending * 50, " บาท)"),
               type = "confirm"
             )
           }
@@ -619,6 +620,5 @@ server <- function(input, output, session) {
   
     
 }
-
 
 shinyApp(ui, server)
