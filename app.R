@@ -279,39 +279,58 @@ server <- function(input, output, session) {
   # 5. เมื่อกดปุ่ม "ยืนยันการเลือก" -> เปิด Modal
   observeEvent(input$pre_confirm, {
     selection <- selected_nums()
-    
+
     if (length(selection) == 0) {
       f7Notif(text = "กรุณาเลือกอย่างน้อย 1 หมายเลข")
     } else {
-      
-      confirmed_list(selection) # <--- "แช่แข็ง" เลขที่เลือกไว้ที่นี่      
-      
+
+      confirmed_list(selection) # <--- "แช่แข็ง" เลขที่เลือกไว้ที่นี่
+
       f7Popup(
         id = "popup_booking",
         title = "ยืนยันการจอง",
         swipeToClose = TRUE,
         page = FALSE,
-        
+
         # --- จุดที่เปลี่ยน: ใช้ uiOutput แทนการเขียนข้อความตรงๆ ---
-        uiOutput("booking_summary_ui"), 
-        
+        uiOutput("booking_summary_ui"),
+
         f7List(
           inset = TRUE,
-          f7SmartSelect(
-            inputId = "final_user_id",
-            label = "ระบุชื่อผู้จอง",
-            choices = member_list(),
-            openIn = "sheet"
+          # ส่วนที่แก้ไข: เปลี่ยนเป็นช่องพิมพ์ปลายเปิด + ตัวช่วยเลือก (Datalist)
+          tags$li(
+            class = "item-content item-input",
+            tags$div(
+              class = "item-inner",
+              tags$div(class = "item-title item-label", "ระบุชื่อผู้จอง"),
+              tags$div(
+                class = "item-input-wrap",
+                tags$input(
+                  id = "final_user_name", # เปลี่ยนจาก id เป็น name เพราะรับเป็นข้อความ
+                  type = "text",
+                  placeholder = "พิมพ์ชื่อ หรือเลือกรายชื่อที่มีอยู่...",
+                  list = "member_datalist", # เชื่อมกับ datalist ด้านล่าง
+                  style = "width: 100%; height: 40px; border: none; font-size: 16px;"
+                )
+              )
+            )
+          ),
+          # รายชื่อสมาชิกทั้งหมดในระบบที่จะไปโผล่เป็นเงาให้เลือก
+          tags$datalist(
+            id = "member_datalist",
+            lapply(names(member_list()), function(name) {
+              tags$option(value = name)
+            })
           )
         ),
-        
+
         f7Block(
           f7Button(inputId = "final_confirm", label = "ตกลง", color = "green", fill = TRUE)
         )
       )
     }
   })
-  
+
   output$booking_summary_ui <- renderUI({
 
     selection <- confirmed_list() # <--- ใช้ตัวแปรที่โดนแช่แข็งไว้
@@ -335,50 +354,157 @@ server <- function(input, output, session) {
     )
   })
 
-  # 6. Logic เมื่อกดปุ่ม "ตกลง" ใน Modal เพื่อบันทึกการจองใหม่
+
+  # --- ถังพักชื่อชั่วคราว (ใช้กรณีต้องเพิ่มชื่อใหม่) ---
+  temp_user_name <- reactiveVal("")
+  
+  # 6. Logic เมื่อกดปุ่ม "ตกลง" ใน Modal (เวอร์ชันทดสอบชื่อเดิม)
   observeEvent(input$final_confirm, {
-    new_nums <- selected_nums()
-    m_id <- as.integer(input$final_user_id)
+    # 1. รับค่าชื่อจากช่องพิมพ์
+    u_name <- trimws(input$final_user_name)
+    req(u_name != "") # ถ้าชื่อว่าง ไม่ต้องทำต่อ
     
+    # 2. ค้นหา ID จากชื่อ (Lookup)
+    # ใช้ sprintf แบบเรียบง่ายตามสไตล์พี่
+    sql_check <- sprintf("SELECT id FROM lottery_members WHERE member_name = '%s' LIMIT 1", u_name)
+    member_res <- dbGetQuery(pool, sql_check)
+    
+    if (nrow(member_res) > 0) {
+      # --- กรณีเจอชื่อในระบบ (แอนเลอร์ / แอนอรทัย) ---
+      m_id <- as.integer(member_res$id[1])
+      
+      # 3. เริ่มกระบวนการบันทึก (ยกมาจากโค้ด Last Working ของพี่)
+      new_nums <- selected_nums()
+      if (length(new_nums) > 0) {
+        con <- poolCheckout(pool)
+        success <- FALSE
+        tryCatch({
+          dbBegin(con)
+          for(num in new_nums) {
+            # ตัด params ออกตามที่พี่ต้องการ เพื่อความ Clean
+            sql_insert <- sprintf(
+              "INSERT INTO lottery_bookings (period_id, member_id, lotto_number) VALUES (%d, %d, '%s')",
+              current_period_id(), m_id, num
+            )
+            dbExecute(con, sql_insert)
+          }
+          dbCommit(con)
+          success <- TRUE
+        }, error = function(e) {
+          dbRollback(con)
+          f7Toast(text = paste("เกิดข้อผิดพลาด:", e$message))
+        })
+        poolReturn(con)
+        
+        if (success) {
+          # ล้างค่าและปิด Popup
+          selected_nums(character(0))
+          db_trigger(db_trigger() + 1)
+          
+          # สั่งปิด Popup (เนื่องจาก shinyMobile เวอร์ชันพี่ไม่มี toggleF7Popup)
+          session$sendCustomMessage(type = "f7-action", message = list(target = "#popup_booking", action = "close"))
+          
+          f7Toast(text = "บันทึกสำเร็จ!")
+        }
+      }
+    } else {
+      # ถ้าไม่เจอชื่อ ให้เปิด Dialog ถาม
+      f7Dialog(
+        id = "confirm_add_new_member", # ID ต้องตรงกับตัว observeEvent ด้านบน
+        title = "สมาชิกใหม่",
+        text = sprintf("ไม่พบชื่อ '%s' ต้องการเพิ่มสมาชิกและจองเลยไหม?", u_name),
+        type = "confirm"
+      )
+    }
+  }) 
+  
+  
+  # --- บล็อกสุดท้าย: เมื่อกดยืนยันจาก Dialog เพื่อเพิ่มสมาชิกใหม่ ---
+  observeEvent(input$confirm_add_new_member, {
+    # ตรวจสอบว่าพี่กด "ตกลง" (TRUE) หรือไม่
+    req(isTRUE(input$confirm_add_new_member))
+    
+    # ดึงชื่อที่เราพักไว้ในช่องพิมพ์ (หรือจะใช้ถังพักชื่อถ้าพี่สร้างไว้)
+    u_name <- trimws(input$final_user_name)
+    req(u_name != "")
+    
+    tryCatch({
+      # 1. เพิ่มชื่อใหม่ลงตารางสมาชิก (Direct Pool Access)
+      dbExecute(pool, sprintf("INSERT INTO lottery_members (member_name) VALUES ('%s')", u_name))
+      
+      # 2. ดึง ID ที่เพิ่งสร้างใหม่มา (Lookup อีกรอบเพื่อให้ชัวร์)
+      new_res <- dbGetQuery(pool, sprintf("SELECT id FROM lottery_members WHERE member_name = '%s' LIMIT 1", u_name))
+      
+      if (nrow(new_res) > 0) {
+        new_m_id <- as.integer(new_res$id[1])
+        
+        # 3. บันทึกการจองทันที (ใช้ Logic ชุดเดียวกับ "เอี่ยว")
+        new_nums <- selected_nums()
+        if (length(new_nums) > 0) {
+          con <- poolCheckout(pool)
+          success <- FALSE
+          tryCatch({
+            dbBegin(con)
+            for(num in new_nums) {
+              sql_insert <- sprintf(
+                "INSERT INTO lottery_bookings (period_id, member_id, lotto_number) VALUES (%d, %d, '%s')",
+                current_period_id(), new_m_id, num
+              )
+              dbExecute(con, sql_insert)
+            }
+            dbCommit(con)
+            success <- TRUE
+          }, error = function(e) {
+            dbRollback(con)
+            f7Toast(text = paste("บันทึกเลขจองไม่สำเร็จ:", e$message))
+          })
+          poolReturn(con)
+          
+          if (success) {
+            # ล้างค่าและปิด Popup
+            selected_nums(character(0))
+            db_trigger(db_trigger() + 1)
+            session$sendCustomMessage(type = "f7-action", message = list(target = "#popup_booking", action = "close"))
+            f7Toast(text = sprintf("เพิ่มคุณ '%s' และบันทึกจองสำเร็จ!", u_name))
+          }
+        }
+      }
+    }, error = function(e) {
+      f7Toast(text = paste("เพิ่มสมาชิกใหม่ไม่สำเร็จ:", e$message))
+    })
+  })  
+  
+  # ฟังก์ชันช่วยบันทึกการจอง (ยกมาจากโค้ดเดิมของพี่)
+  execute_booking <- function(m_id) {
+    new_nums <- selected_nums()
     if (length(new_nums) > 0) {
       con <- poolCheckout(pool)
-      
-      success <- FALSE # สร้างตัวแปรเช็คสถานะ
-      
+      success <- FALSE
       tryCatch({
         dbBegin(con)
-        # แก้ตรงบรรทัด INSERT
         for(num in new_nums) {
-          dbExecute(con, 
+          dbExecute(con,
                     "INSERT INTO lottery_bookings (period_id, member_id, lotto_number) VALUES ($1, $2, $3)",
                     params = list(current_period_id(), m_id, num))
         }
         dbCommit(con)
-        success <- TRUE # บันทึกสำเร็จ
+        success <- TRUE
       }, error = function(e) {
         dbRollback(con)
-        f7Toast(text = paste("เกิดข้อผิดพลาด:", e$message), color = "red")
+        f7Toast(text = paste("เกิดข้อผิดพลาด:", e$message))
       })
-      
-      # คืนท่อก่อน
       poolReturn(con)
       
-      
-      # ถ้าสำเร็จค่อยทำงานต่อ
       if (success) {
-        # 1. ล้างเลขที่เลือกค้างไว้ก่อนเลย
         selected_nums(character(0))
-        
-        # 2. หน่วงเวลานิดนึง (ประมาณ 0.2 วินาที) ให้ DB เขียนเสร็จชัวร์ๆ
-        Sys.sleep(0.2)
-        
-        # 3. ดีดนิ้วเรียกข้อมูลใหม่ (วางไว้ล่างสุด)
         db_trigger(db_trigger() + 1)
-
+        # ปิด Popup และเคลียร์ค่า
+        session$sendCustomMessage(type = "f7-action", message = list(target = "#popup_booking", action = "close"))
         f7Toast(text = "บันทึกสำเร็จ!", color = "green")
       }
     }
-  })
+  }  
+  
   
   
   observeEvent(input$check_available, {
