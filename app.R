@@ -2,11 +2,13 @@ library(shiny)
 library(shinyMobile)
 library(dplyr)
 library(tidyr)
+library(stringr)
 
 library(pool)
 library(RPostgres) # ต้องมีเพื่อให้ dbPool รู้ว่าจะใช้ Engine ตัวไหน
 
-source("secrets.R")
+source("secrets.R") # Test VS Production DB configurations
+
 
 # สร้าง Pool (ใช้วิธีเรียกผ่าน pool แทน DBI)
 pool <- dbPool(
@@ -21,7 +23,17 @@ pool <- dbPool(
   maxSize = 5          # แอปนี้ใช้คนเดียวหรือกลุ่มเล็ก 3 ท่อก็เหลือเฟือครับ  
 )
 
-
+# --- ฟังก์ชันสำหรับทำความสะอาดชื่อผู้จอง ---
+clean_member_name <- function(name) {
+  if (is.null(name) || name == "") return("")
+  
+  name %>% 
+    trimws() %>%
+    # ตัดเฉพาะ สระ หรือ วรรณยุกต์ ที่เผลอพิมพ์นำหน้าพยัญชนะ (ยกเว้นพวก เ แ โ ใ ไ ที่อยู่หน้าได้)
+    # เราจะตัดกลุ่ม ะ า ิ ี ึ ื ุ ู ั ํ ่ ้ ๊ ๋ ็ ์ ที่อยู่ตัวแรกสุดทิ้ง
+    gsub("^[ะาิีึืุูัํ่้๊๋็์]+", "", .) %>%
+    trimws()
+}
 
 ui <- f7Page(
   title = "ลุ้นหวยกัน เพื่อนปันสุข",
@@ -97,45 +109,20 @@ ui <- f7Page(
 
 server <- function(input, output, session) {
   
-  # Debug only -- ข้อมูลทดสอบ (Static Data) 
-  raw_data <- list(
-    "ดอนนี่" = c("12", "20", "22", "57"),
-    "นาถ" = c("26", "47", "64", "72"), 
-    "ตี๋" = c("08", "24", "42", "56", "65", "74", "80"),
-    "อ้อ" = c("40", "61", "87"),
-    "เอ" = c("17", "70", "71", "73"),
-    "เจ๊นก" = c("09", "27"),
-    "บอย" = c("01", "32", "59", "95"), 
-    "เก๋" = c("02", "69", "82", "94"),
-    "โจ๊ก" = c("03", "13", "23", "88", "89", "98"),
-    "บอม" = c("91", "96", "97", "99"), 
-    "ศรีกุล" = c("39", "49"),
-    "เก้อ" = c("45", "54", "66"),
-    "พจน์" = c("19", "36"),
-    "เอี่ยว" = c("21", "30", "34", "41")
-  )
-  paid_users <- c("เก้อ", "หาญ", "รวีวรรณ", "เอี่ยว")
-  
-  init_df <- stack(raw_data) %>%
-    rename(number = values, name = ind) %>%
-    mutate(number = sprintf("%02d", as.numeric(as.character(number))),
-           status = if_else(name %in% paid_users, "จ่ายแล้ว", ""))
-  
-  booked_data <- reactiveVal(init_df) # init_df คือตัวเดิมที่เรามี
-  
   # Temporary list of numbers before PRE-CONFIRM
   selected_nums <- reactiveVal(character(0))
   
   # Chunk of selected numbers after PRE-CONFIRM
   confirmed_list <- reactiveVal(character(0))  
-  
+
+  # A selected name who buy the tickets
+  confirmed_name <- reactiveVal("") 
+    
   db_trigger <- reactiveVal(0)  
-  
-  
-  
-  
-  
-  
+
+  # ==========================================
+  # ส่วนของ SERVER (แท็บที่ 1: อินโทร)
+  # ==========================================  
   
   # --- ฟังก์ชันดึง ID งวดปัจจุบันที่ 'กำลังเปิดจอง' ---
   current_period_id <- reactive({
@@ -196,6 +183,9 @@ server <- function(input, output, session) {
   })
 
   
+  # ==========================================
+  # ส่วนของ SERVER (แท็บที่ 2: การจอง)
+  # ==========================================
   
   # ดึงข้อมูลการจองปัจจุบัน (เปลี่ยนชื่อจาก booked_data เดิม)
   booked_db <- reactive({
@@ -214,6 +204,7 @@ server <- function(input, output, session) {
   
   # ในเซิร์ฟเวอร์ ดึงรายชื่อเพื่อนมาทำ choices  
   member_list <- reactive({
+    db_trigger() # <--- เติมไว้เพื่อให้รายชื่อเพื่อนอัปเดตแบบ Real-time     
     res <- dbGetQuery(pool, "SELECT id, member_name FROM lottery_members ORDER BY member_name ASC")
     # ทำเป็น Named Vector: c("ชื่อ" = id) เพื่อให้ส่งค่า id กลับไปบันทึก
     setNames(res$id, res$member_name)
@@ -271,7 +262,7 @@ server <- function(input, output, session) {
           selected_nums(c(current, num_str))
         }
       } else {
-        f7Toast(text = "เลขนี้มีเจ้าของแล้วจ้า", position = "bottom", color = "red")
+        f7Toast(text = "เลขนี้มีเจ้าของแล้วจ้า", position = "bottom")
       }
     })
   })
@@ -303,16 +294,7 @@ server <- function(input, output, session) {
             tags$div(
               class = "item-inner",
               tags$div(class = "item-title item-label", "ระบุชื่อผู้จอง"),
-              tags$div(
-                class = "item-input-wrap",
-                tags$input(
-                  id = "final_user_name", # เปลี่ยนจาก id เป็น name เพราะรับเป็นข้อความ
-                  type = "text",
-                  placeholder = "พิมพ์ชื่อ หรือเลือกรายชื่อที่มีอยู่...",
-                  list = "member_datalist", # เชื่อมกับ datalist ด้านล่าง
-                  style = "width: 100%; height: 40px; border: none; font-size: 16px;"
-                )
-              )
+              uiOutput("name_input_field")
             )
           ),
           # รายชื่อสมาชิกทั้งหมดในระบบที่จะไปโผล่เป็นเงาให้เลือก
@@ -331,13 +313,25 @@ server <- function(input, output, session) {
     }
   })
 
+  output$name_input_field <- renderUI({
+    tags$input(
+      id = "final_user_name",
+      type = "text",
+      value = "", # <--- บังคับให้เป็นค่าว่างทุกครั้งที่วาดใหม่
+      placeholder = "พิมพ์ชื่อ หรือเลือกรายชื่อ...",
+      list = "member_datalist",
+      style = "width: 100%; height: 40px; border: none; font-size: 16px;"
+    )
+  })  
+  
   output$booking_summary_ui <- renderUI({
 
     selection <- confirmed_list() # <--- ใช้ตัวแปรที่โดนแช่แข็งไว้
+    name <- confirmed_name()      # <--- ดึงชื่อที่แช่แข็งไว้มาใช้
     
     booking_sum <- paste0("(", length(selection), ")")
     booking_list <- paste(sort(selection), collapse = ", ")
-    booking_success <- paste("จองสำเร็จ", booking_sum,  ":", booking_list)
+    booking_success <- paste("จองสำเร็จ", name, booking_sum,  ":", booking_list)
     
     
     # ป้องกันกรณีค่าว่าง
@@ -354,20 +348,17 @@ server <- function(input, output, session) {
     )
   })
 
-
-  # --- ถังพักชื่อชั่วคราว (ใช้กรณีต้องเพิ่มชื่อใหม่) ---
-  temp_user_name <- reactiveVal("")
-  
   # 6. Logic เมื่อกดปุ่ม "ตกลง" ใน Modal (เวอร์ชันทดสอบชื่อเดิม)
   observeEvent(input$final_confirm, {
     # 1. รับค่าชื่อจากช่องพิมพ์
-    u_name <- trimws(input$final_user_name)
+    u_name <- clean_member_name(input$final_user_name)
     req(u_name != "") # ถ้าชื่อว่าง ไม่ต้องทำต่อ
     
+    confirmed_name(u_name)
+    
     # 2. ค้นหา ID จากชื่อ (Lookup)
-    # ใช้ sprintf แบบเรียบง่ายตามสไตล์พี่
-    sql_check <- sprintf("SELECT id FROM lottery_members WHERE member_name = '%s' LIMIT 1", u_name)
-    member_res <- dbGetQuery(pool, sql_check)
+    sql_check <- "SELECT id FROM lottery_members WHERE member_name = $1 LIMIT 1"
+    member_res <- dbGetQuery(pool, sql_check, params = list(u_name))
     
     if (nrow(member_res) > 0) {
       # --- กรณีเจอชื่อในระบบ (แอนเลอร์ / แอนอรทัย) ---
@@ -425,15 +416,15 @@ server <- function(input, output, session) {
     req(isTRUE(input$confirm_add_new_member))
     
     # ดึงชื่อที่เราพักไว้ในช่องพิมพ์ (หรือจะใช้ถังพักชื่อถ้าพี่สร้างไว้)
-    u_name <- trimws(input$final_user_name)
+    u_name <- clean_member_name(input$final_user_name)
     req(u_name != "")
     
     tryCatch({
-      # 1. เพิ่มชื่อใหม่ลงตารางสมาชิก (Direct Pool Access)
-      dbExecute(pool, sprintf("INSERT INTO lottery_members (member_name) VALUES ('%s')", u_name))
+      # 1. เพิ่มชื่อใหม่ (ใช้ params แทน sprintf)
+      dbExecute(pool, "INSERT INTO lottery_members (member_name) VALUES ($1)", params = list(u_name))
       
-      # 2. ดึง ID ที่เพิ่งสร้างใหม่มา (Lookup อีกรอบเพื่อให้ชัวร์)
-      new_res <- dbGetQuery(pool, sprintf("SELECT id FROM lottery_members WHERE member_name = '%s' LIMIT 1", u_name))
+      # 2. ดึง ID ที่เพิ่งสร้างใหม่ (ใช้ params แทน sprintf)
+      new_res <- dbGetQuery(pool, "SELECT id FROM lottery_members WHERE member_name = $1 LIMIT 1", params = list(u_name))
       
       if (nrow(new_res) > 0) {
         new_m_id <- as.integer(new_res$id[1])
@@ -500,15 +491,12 @@ server <- function(input, output, session) {
         db_trigger(db_trigger() + 1)
         # ปิด Popup และเคลียร์ค่า
         session$sendCustomMessage(type = "f7-action", message = list(target = "#popup_booking", action = "close"))
-        f7Toast(text = "บันทึกสำเร็จ!", color = "green")
+        f7Toast(text = "บันทึกสำเร็จ!")
       }
     }
   }  
   
-  
-  
   observeEvent(input$check_available, {
-    
     data <- booked_db()
     all_nums <- sprintf("%02d", 0:99)
     booked_nums <- data$number
@@ -554,8 +542,17 @@ server <- function(input, output, session) {
         count = n(),
         is_paid = all(payment_status == TRUE),
         .groups = 'drop'
-      ) %>%
-      arrange(is_paid, name)
+      )
+      
+      #arrange(is_paid, name) -> เรียงลำดับไม่ถูก (เอาสระไปไว้หลัง ฮ)
+      
+    # วิธ๊แก้การเรียงลำดับชื่อ
+    correct_order <- str_order(summary_data$name, locale = "th")
+    summary_data <- summary_data[correct_order, ]
+    
+    # หลังจากเรียงชื่อแบบไทยเสร็จแล้ว ค่อยจัดกลุ่ม is_paid (เอา FALSE ขึ้นก่อน)
+    # arrange ของ dplyr จะรักษาลำดับเดิมไว้ถ้าค่าเท่ากัน (Stable Sort)
+    summary_data <- summary_data %>% arrange(is_paid)      
     
     f7List(
       inset = TRUE,
@@ -578,56 +575,75 @@ server <- function(input, output, session) {
     )
   })
   
-  # 2. จัดการปุ่มกด (จ่ายเงิน) และ Pop-up ยืนยัน
+  # 1. ถังจดบันทึก ID ที่เราสร้าง Observer ไปแล้ว (วางไว้บนสุดของ server)
+  pay_observers <- reactiveVal(numeric(0))
+  
+  # 2. ตัวจัดการปุ่มกด (จ่ายเงิน) แบบ Dynamic ที่ฉลาดขึ้น
   observe({
-    # ดึงรายชื่อสมาชิกมาสร้างตัวดักจับ (Observer)
-    members <- dbGetQuery(pool, "SELECT id, member_name FROM lottery_members")
+    db_trigger() # รับสัญญาณเมื่อมีการเปลี่ยนแปลง (เช่น มีสมาชิกใหม่จองเลขเข้ามา)
     
-    for (i in 1:nrow(members)) {
-      local({
-        m_id <- members$id[i]
-        m_name <- members$member_name[i]
-        
-        # เมื่อกดปุ่ม 'ค้างชำระ' ของแต่ละคน
-        observeEvent(input[[paste0("pay_btn_", m_id)]], {
-          # เช็คยอดที่ค้างอยู่จริง
-          pending <- dbGetQuery(pool, 
-                                "SELECT count(*) as count FROM lottery_bookings 
-                                 WHERE member_id = $1 AND period_id = $2 AND payment_status = FALSE", 
-                                 params = list(m_id, current_period_id()))$count
+    p_id <- current_period_id()
+    req(p_id)
+    
+    # ดึงรายชื่อสมาชิกที่มี "การจอง" ในงวดปัจจุบัน
+    current_bookings <- dbGetQuery(pool, 
+                                   "SELECT DISTINCT m.id 
+                                    FROM lottery_bookings b
+                                    JOIN lottery_members m ON b.member_id = m.id
+                                    WHERE b.period_id = $1", 
+                                   params = list(p_id))
+    
+    if (nrow(current_bookings) > 0) {
+      # หาว่าใครบ้างที่ "ยังไม่มี" หูฟัง (Observer)
+      new_member_ids <- setdiff(current_bookings$id, pay_observers())
+      
+      for (m_id in new_member_ids) {
+        # ใช้ local เพื่อ "ล็อก" ค่า m_id ไว้เฉพาะของคนนั้นๆ
+        local({
+          this_id <- m_id
           
-          if (pending > 0) {
-            f7Dialog(
-              id = paste0("dialog_pay_", m_id),
-              title = "ยืนยันการชำระเงิน",
-              text = paste0("คุณ ", m_name, " มียอดจอง ", pending, " ใบ ",
-                            "(", pending * 50, " บาท)"),
-              type = "confirm"
-            )
-          }
-        })
-        
-        # เมื่อกดยืนยัน 'ตกลง' ใน Dialog
-        observeEvent(input[[paste0("dialog_pay_", m_id)]], {
-          # เช็คว่ากดปุ่มตกลง (TRUE) หรือไม่
-          if (isTRUE(input[[paste0("dialog_pay_", m_id)]])) {
-            # อัปเดต DB
+          # ดักจับการกดปุ่ม "ค้างชำระ" (pay_btn_...)
+          observeEvent(input[[paste0("pay_btn_", this_id)]], {
+            # ดึงข้อมูลล่าสุด ณ วินาทีที่กด (กันคนกดซ้อน)
+            m_info <- dbGetQuery(pool, "SELECT member_name FROM lottery_members WHERE id = $1", params = list(this_id))
+            m_name <- m_info$member_name[1]
+            
+            pending_res <- dbGetQuery(pool, 
+                                      "SELECT count(*) as count FROM lottery_bookings 
+                                       WHERE member_id = $1 AND period_id = $2 AND payment_status = FALSE", 
+                                      params = list(this_id, current_period_id()))
+            pending <- pending_res$count
+            
+            if (pending > 0) {
+              f7Dialog(
+                id = paste0("dialog_pay_", this_id),
+                title = "ยืนยันการชำระเงิน",
+                text = paste0("คุณ ", m_name, " มียอดจอง ", pending, " ใบ (", pending * 50, " บาท)"),
+                type = "confirm"
+              )
+            }
+          }, ignoreInit = TRUE)
+          
+          # ดักจับการกดยืนยัน 'ตกลง' ใน Dialog (dialog_pay_...)
+          observeEvent(input[[paste0("dialog_pay_", this_id)]], {
+            req(isTRUE(input[[paste0("dialog_pay_", this_id)]]))
+            
             dbExecute(pool, 
                       "UPDATE lottery_bookings SET payment_status = TRUE 
                        WHERE member_id = $1 AND period_id = $2",
-                       params = list(m_id, current_period_id()))
+                      params = list(this_id, current_period_id()))
             
-            # ดีดนิ้ว Trigger ให้หน้าจอ Refresh ทันที
             db_trigger(db_trigger() + 1)
-            
-            f7Toast(text = paste("บันทึกการชำระเงินเรียบร้อย"), color = "green")
-          }
+            f7Toast(text = "บันทึกการชำระเงินเรียบร้อย", color = "green")
+          }, ignoreInit = TRUE)
         })
-      })
+      }
+      
+      # อัปเดตรายชื่อคนที่มี Observer แล้ว จะได้ไม่สร้างซ้ำในรอบหน้า
+      pay_observers(unique(c(pay_observers(), new_member_ids)))
     }
-  })  
-  
-  
+  })
+
   observeEvent(input$close_period_btn, {
     p_id <- current_period_id()
     req(p_id)
@@ -675,6 +691,8 @@ server <- function(input, output, session) {
   })
   
   observeEvent(input$confirm_close_period, {
+    
+      req(isTRUE(input$confirm_close_period))    
       p_id <- current_period_id()
       req(p_id)
       
@@ -712,14 +730,14 @@ server <- function(input, output, session) {
         
         # ดีดนิ้ว Trigger ให้ทุกอย่างในแอปอัปเดตตามสถานะใหม่ใน DB
         db_trigger(db_trigger() + 1)
-        f7Toast(text = msg, color = "blue")
+        f7Toast(text = msg)
         
       }, error = function(e) {
         if(exists("con")) {
           dbRollback(con)
           poolReturn(con)
         }
-        f7Toast(text = paste("เกิดข้อผิดพลาด:", e$message), color = "red")
+        f7Toast(text = paste("เกิดข้อผิดพลาด:", e$message))
       })
 
   })  
@@ -734,17 +752,13 @@ server <- function(input, output, session) {
   
   # f7Login  
   loginData <- f7LoginServer(id = "login")
-  
-  # exportTestValues(
-  #   status = loginData$status(),
-  #   user = loginData$user(),
-  #   admin = loginData$password(),
-  #   authenticated = loginData$authenticated(),
-  #   cancelled = loginData$cancelled()
-  # )  
-  
-  
+
     
 }
+
+# --- นอก UI/Server ---
+onStop(function() {
+  poolClose(pool)
+})
 
 shinyApp(ui, server)
