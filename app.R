@@ -217,6 +217,8 @@ server <- function(input, output, session) {
     data <- booked_db()
     selection <- selected_nums()
     
+    
+    #--- 3.1 Render ตาราง ---
     lapply(0:99, function(i) {
       num_str <- sprintf("%02d", i)
       is_booked <- num_str %in% data$number
@@ -248,8 +250,11 @@ server <- function(input, output, session) {
     })
   })
   
+  #--- 3.2 การจัดการปุ่มตัวเลข (จอง/ยกเลิก) ---
   lapply(0:99, function(i) {
     num_str <- sprintf("%02d", i)
+    
+    # --- 3.2.1 เลือกเลขจอง  ---
     observeEvent(input[[paste0("btn_", num_str)]], {
       # ถ้ากดปุ่มปุ๊บ ให้เช็คข้อมูลล่าสุดจาก DB ทันที
       data <- booked_db() 
@@ -262,11 +267,41 @@ server <- function(input, output, session) {
           selected_nums(c(current, num_str))
         }
       } else {
-        f7Toast(text = "เลขนี้มีเจ้าของแล้วจ้า", position = "bottom")
+    		# --- [Logic ใหม่: ถ้าเลขมีคนจองไปแล้ว] ---
+        f7Dialog(
+          id = paste0("confirm_delete_", num_str),
+          title = "⚠️ เลขนี้มีเจ้าของแล้ว",
+          text = paste0("เลข ", num_str, " ถูกจองไปแล้ว คุณต้องการ 'ยกเลิกการจอง' ของเลขนี้ใช่หรือไม่?"),
+          type = "confirm" # แบบ confirm จะมีปุ่ม ตกลง (OK) และ ยกเลิก (Cancel)
+        )
       }
     })
+    
+    # --- 3.2.2 ยกเลิกเลขจอง  ---
+    observeEvent(input[[paste0("confirm_delete_", num_str)]], {
+      req(isTRUE(input[[paste0("confirm_delete_", num_str)]]))
+      
+      period_id_val <- current_period_id()
+      req(!is.null(period_id_val))
+      
+      query <- sprintf(
+        "DELETE FROM public.lottery_bookings WHERE lotto_number = '%s' AND period_id = %d", 
+        num_str, 
+        period_id_val
+      )
+      
+      tryCatch({
+        dbExecute(pool, query)
+        f7Toast(text = paste0("ยกเลิกการจองเลข ", num_str, " ของงวดนี้เรียบร้อยแล้ว"), position = "bottom")
+        db_trigger(db_trigger() + 1)
+        # (อย่าลืมสั่งอัปเดต booked_db() หรือ trigger หน้าจอตรงนี้ด้วยนะครับพี่)
+      }, error = function(e) {
+        f7Toast(text = "เกิดข้อผิดพลาดในการลบข้อมูล", position = "bottom")
+      })
+    })
+    
   })
-  
+
   # 5. เมื่อกดปุ่ม "ยืนยันการเลือก" -> เปิด Modal
   observeEvent(input$pre_confirm, {
     selection <- selected_nums()
