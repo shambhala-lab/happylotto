@@ -3,28 +3,11 @@ library(shinyMobile)
 library(dplyr)
 library(tidyr)
 library(stringr)
-library(lubridate) # ปฏิทิน วันที่
+library(lubridate)
 
 library(pool)
-library(RPostgres) # ต้องมีเพื่อให้ dbPool รู้ว่าจะใช้ Engine ตัวไหน
+library(RPostgres)
 
-#source("secrets.R") # Test VS Production DB configurations
-
-
-# สร้าง Pool (ใช้วิธีเรียกผ่าน pool แทน DBI)
-pool1 <- dbPool(
-  drv = Postgres(),
-  host = db_config$host,
-  dbname = db_config$dbname,
-  user = db_config$user,
-  password = db_config$pass,
-  port = db_config$port,
-  idleTimeout = 60000, # 10 นาทีปิดท่อ
-  minSize = 3,         # เมื่อไม่มีคนใช้ ไม่ต้องคาเครื่องไว้เลย ให้เหลือ 0
-  maxSize = 5          # แอปนี้ใช้คนเดียวหรือกลุ่มเล็ก 3 ท่อก็เหลือเฟือครับ  
-)
-
-# --- โค้ดใหม่ที่ใช้แทนของเดิม ---
 
 # ดึงค่า Environment Variables (ถ้าไม่พบ ให้ใช้ค่า fallback ด้านหลัง)
 pool <- dbPool(
@@ -891,16 +874,12 @@ server <- function(input, output, session) {
   }  
   
   
-  
-  
-  
-  
   # เมื่อ User ปิด Browser ให้หยุดแอปทันที (เพื่อประหยัดชั่วโมง)
   session$onSessionEnded(function() {
     stopApp()
   })
   
-  
+ 
   # f7Login  
   loginData <- f7LoginServer(id = "login")
   
