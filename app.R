@@ -3,15 +3,16 @@ library(shinyMobile)
 library(dplyr)
 library(tidyr)
 library(stringr)
+library(lubridate) # ปฏิทิน วันที่
 
 library(pool)
 library(RPostgres) # ต้องมีเพื่อให้ dbPool รู้ว่าจะใช้ Engine ตัวไหน
 
-source("secrets.R") # Test VS Production DB configurations
+#source("secrets.R") # Test VS Production DB configurations
 
 
 # สร้าง Pool (ใช้วิธีเรียกผ่าน pool แทน DBI)
-pool <- dbPool(
+pool1 <- dbPool(
   drv = Postgres(),
   host = db_config$host,
   dbname = db_config$dbname,
@@ -21,6 +22,21 @@ pool <- dbPool(
   idleTimeout = 60000, # 10 นาทีปิดท่อ
   minSize = 3,         # เมื่อไม่มีคนใช้ ไม่ต้องคาเครื่องไว้เลย ให้เหลือ 0
   maxSize = 5          # แอปนี้ใช้คนเดียวหรือกลุ่มเล็ก 3 ท่อก็เหลือเฟือครับ  
+)
+
+# --- โค้ดใหม่ที่ใช้แทนของเดิม ---
+
+# ดึงค่า Environment Variables (ถ้าไม่พบ ให้ใช้ค่า fallback ด้านหลัง)
+pool <- dbPool(
+  drv = Postgres(),
+  host = Sys.getenv("DB_HOST"),
+  dbname = Sys.getenv("DB_NAME"),
+  user = Sys.getenv("DB_USER"),
+  password = Sys.getenv("DB_PASS"),
+  port = 5432,
+  idleTimeout = 60000, # 10 นาทีปิดท่อ
+  minSize = 3,         
+  maxSize = 5          
 )
 
 # --- ฟังก์ชันสำหรับทำความสะอาดชื่อผู้จอง ---
@@ -81,10 +97,10 @@ ui <- f7Page(
         
         f7Block(
           f7Grid(cols = 2,
-            # ปุ่มเช็คเลขว่าง
-            f7Button(inputId = "check_available", label = "เช็คเลขว่าง", color = "blue", fill = TRUE),
-            # ปุ่มยืนยันเดิม
-            f7Button(inputId = "pre_confirm", label = "ยืนยันการเลือก", color = "green", fill = TRUE)
+                 # ปุ่มเช็คเลขว่าง
+                 f7Button(inputId = "check_available", label = "เช็คเลขว่าง", color = "blue", fill = TRUE),
+                 # ปุ่มยืนยันเดิม
+                 f7Button(inputId = "pre_confirm", label = "ยืนยันการเลือก", color = "green", fill = TRUE)
           )          
         )
       ),
@@ -101,7 +117,49 @@ ui <- f7Page(
         f7Block(
           f7Button(inputId = "close_period_btn", label = "สรุปปิดงวด", color = "red", fill = TRUE)
         )
+      ),
+      
+      # --- แท็บที่ 4: ตั้งค่าระบบ (Settings) ---
+      f7Tab(
+        title = "ตั้งค่า",
+        tabName = "Settings",
+        icon = f7Icon("gear_alt_fill"),
+        
+        # 1. จัดการงวดปัจจุบัน (โชว์งวดปัจจุบัน + ช่องแก้ไข)
+        f7BlockTitle("จัดการงวดปัจจุบัน"),
+        f7List(
+          inset = TRUE,
+          uiOutput("current_period_settings_ui") # Server จะส่ง ชื่องวดปัจจุบัน + f7DatePicker / f7Text มาโชว์
+        ),
+        f7Block(
+          f7Button(inputId = "update_period_date_btn", label = "บันทึกการเปลี่ยนวันที่", color = "green", fill = TRUE)
+        ),
+        
+        # 2. ข้อมูลเวอร์ชันแอป
+        f7BlockTitle("เกี่ยวกับระบบ"),
+        f7List(
+          inset = TRUE,
+          mode = "media",
+          f7ListItem(
+            title = "HappyLotto App",
+            subtitle = "เวอร์ชัน 1.2.0 (Build 2026)",
+            media = f7Icon("info_circle")
+          )
+        ),
+        
+        # 3. การทำงานของระบบ & สถานะ Database
+        f7BlockTitle("การทำงานของระบบ"),
+        f7List(
+          inset = TRUE,
+          mode = "media",
+          # แสดงสถานะการเชื่อมต่อ DB
+          uiOutput("db_status_ui")
+        ),
+        f7Block(
+          f7Button(inputId = "shutdown_app_btn", label = "ปิดการทำงานแอปพลิเคชัน", color = "red", fill = TRUE)
+        )
       )
+      
       
     )
   )
@@ -114,18 +172,21 @@ server <- function(input, output, session) {
   
   # Chunk of selected numbers after PRE-CONFIRM
   confirmed_list <- reactiveVal(character(0))  
-
+  
   # A selected name who buy the tickets
   confirmed_name <- reactiveVal("") 
-    
+  
   db_trigger <- reactiveVal(0)  
-
+  
   # ==========================================
   # ส่วนของ SERVER (แท็บที่ 1: อินโทร)
   # ==========================================  
   
   # --- ฟังก์ชันดึง ID งวดปัจจุบันที่ 'กำลังเปิดจอง' ---
   current_period_id <- reactive({
+    
+    db_trigger() # <--- เพิ่มบรรทัดนี้
+    
     # ดึงงวดที่ status = 'กำลังเปิดจอง' มา 1 อัน
     res <- dbGetQuery(pool, "SELECT id FROM lottery_periods WHERE status = 'กำลังเปิดจอง' LIMIT 1")
     
@@ -139,6 +200,9 @@ server <- function(input, output, session) {
   
   # ฟังก์ชันสำหรับดึงวันที่งวดปัจจุบัน (Reactive)
   get_current_period_name <- reactive({
+    
+    db_trigger() # <--- เพิ่มบรรทัดนี้
+    
     # ไม่ต้องมี get_db_conn() และ dbDisconnect() แล้ว
     res <- dbGetQuery(pool, "SELECT display_name FROM lottery_periods WHERE status = 'กำลังเปิดจอง' LIMIT 1")
     
@@ -175,13 +239,13 @@ server <- function(input, output, session) {
       "ผู้ถูกรางวัลได้รับเงินสดสูงสุด 3,750 บาท (1:75) ",
       
       br(), br(),
-            
+      
       footer = span(
         tags$small(style="color:red; font-weight:bold;", "**หมายเหตุ** หักทำบุญ 1,250 บาท")
       )
     )
   })
-
+  
   
   # ==========================================
   # ส่วนของ SERVER (แท็บที่ 2: การจอง)
@@ -210,7 +274,7 @@ server <- function(input, output, session) {
     setNames(res$id, res$member_name)
   })  
   
-    
+  
   # 3. Render ตารางเลข 00-99 (เน้นสีที่ตัวเลข/Label)
   output$lotto_grid <- renderUI({
     
@@ -267,7 +331,7 @@ server <- function(input, output, session) {
           selected_nums(c(current, num_str))
         }
       } else {
-    		# --- [Logic ใหม่: ถ้าเลขมีคนจองไปแล้ว] ---
+        # --- [Logic ใหม่: ถ้าเลขมีคนจองไปแล้ว] ---
         f7Dialog(
           id = paste0("confirm_delete_", num_str),
           title = "⚠️ เลขนี้มีเจ้าของแล้ว",
@@ -301,26 +365,26 @@ server <- function(input, output, session) {
     })
     
   })
-
+  
   # 5. เมื่อกดปุ่ม "ยืนยันการเลือก" -> เปิด Modal
   observeEvent(input$pre_confirm, {
     selection <- selected_nums()
-
+    
     if (length(selection) == 0) {
       f7Notif(text = "กรุณาเลือกอย่างน้อย 1 หมายเลข")
     } else {
-
+      
       confirmed_list(selection) # <--- "แช่แข็ง" เลขที่เลือกไว้ที่นี่
-
+      
       f7Popup(
         id = "popup_booking",
         title = "ยืนยันการจอง",
         swipeToClose = TRUE,
         page = FALSE,
-
+        
         # --- จุดที่เปลี่ยน: ใช้ uiOutput แทนการเขียนข้อความตรงๆ ---
         uiOutput("booking_summary_ui"),
-
+        
         f7List(
           inset = TRUE,
           # ส่วนที่แก้ไข: เปลี่ยนเป็นช่องพิมพ์ปลายเปิด + ตัวช่วยเลือก (Datalist)
@@ -340,14 +404,14 @@ server <- function(input, output, session) {
             })
           )
         ),
-
+        
         f7Block(
           f7Button(inputId = "final_confirm", label = "ตกลง", color = "green", fill = TRUE)
         )
       )
     }
   })
-
+  
   output$name_input_field <- renderUI({
     tags$input(
       id = "final_user_name",
@@ -360,7 +424,7 @@ server <- function(input, output, session) {
   })  
   
   output$booking_summary_ui <- renderUI({
-
+    
     selection <- confirmed_list() # <--- ใช้ตัวแปรที่โดนแช่แข็งไว้
     name <- confirmed_name()      # <--- ดึงชื่อที่แช่แข็งไว้มาใช้
     
@@ -382,7 +446,7 @@ server <- function(input, output, session) {
         style = "font-size: 1.2em; color: #2196f3; font-weight: bold;")
     )
   })
-
+  
   # 6. Logic เมื่อกดปุ่ม "ตกลง" ใน Modal (เวอร์ชันทดสอบชื่อเดิม)
   observeEvent(input$final_confirm, {
     # 1. รับค่าชื่อจากช่องพิมพ์
@@ -538,7 +602,7 @@ server <- function(input, output, session) {
     available_nums <- setdiff(all_nums, booked_nums)
     avail_sum = paste0("เลขว่าง (", length(available_nums), ")")
     avail_list <- paste(available_nums, collapse = " - ")
-
+    
     f7Dialog(
       title = avail_sum,
       text = avail_list
@@ -546,7 +610,7 @@ server <- function(input, output, session) {
     
   })
   
-
+  
   
   # ==========================================
   # ส่วนของ SERVER (แท็บที่ 3: ยอดชำระ)
@@ -578,9 +642,9 @@ server <- function(input, output, session) {
         is_paid = all(payment_status == TRUE),
         .groups = 'drop'
       )
-      
-      #arrange(is_paid, name) -> เรียงลำดับไม่ถูก (เอาสระไปไว้หลัง ฮ)
-      
+    
+    #arrange(is_paid, name) -> เรียงลำดับไม่ถูก (เอาสระไปไว้หลัง ฮ)
+    
     # วิธ๊แก้การเรียงลำดับชื่อ
     correct_order <- str_order(summary_data$name, locale = "th")
     summary_data <- summary_data[correct_order, ]
@@ -678,7 +742,7 @@ server <- function(input, output, session) {
       pay_observers(unique(c(pay_observers(), new_member_ids)))
     }
   })
-
+  
   observeEvent(input$close_period_btn, {
     p_id <- current_period_id()
     req(p_id)
@@ -709,73 +773,125 @@ server <- function(input, output, session) {
       )
     }
   })
-  
-  # เมื่อแอดมินกดยืนยันใน Dialog
-  observeEvent(input$confirm_close_period_old, {
-      p_id <- current_period_id()
-      
-      # อัปเดต DB: เปลี่ยนสถานะงวดปัจจุบัน
-      dbExecute(pool, 
-                "UPDATE lottery_periods SET status = 'จบงวดแล้ว' WHERE id = $1", 
-                params = list(p_id))
-      
-      # ดีด Trigger ให้ทุกหน้าจอรู้ว่า 'กำลังเปิดจอง' หายไปแล้ว
-      db_trigger(db_trigger() + 1)
-      
-      f7Toast(text = "ปิดงวดเรียบร้อยแล้ว!")
-  })
+
+  # Trigger ส่งสัญญาณเมื่อมีการ Auto-create งวดใหม่
+  new_period_created_trigger <- reactiveVal(NULL)  
   
   observeEvent(input$confirm_close_period, {
     
-      req(isTRUE(input$confirm_close_period))    
-      p_id <- current_period_id()
-      req(p_id)
+    req(isTRUE(input$confirm_close_period))    
+    p_id <- current_period_id()
+    req(p_id)
+    
+    # ใช้ TryCatch เพื่อความปลอดภัย ถ้าอัปเดตตัวนึงพลาด อีกตัวต้องไม่พัง
+    tryCatch({
+      con <- poolCheckout(pool)
+      dbBegin(con)
       
-      # ใช้ TryCatch เพื่อความปลอดภัย ถ้าอัปเดตตัวนึงพลาด อีกตัวต้องไม่พัง
-      tryCatch({
-        con <- poolCheckout(pool)
-        dbBegin(con)
-        
-        # 1. อัปเดตงวดปัจจุบันให้ 'จบงวดแล้ว'
-        dbExecute(con, 
-                  "UPDATE lottery_periods SET status = 'จบงวดแล้ว' WHERE id = $1", 
-                  params = list(p_id))
-        
-        # 2. ค้นหา ID ของงวดถัดไป (เรียงตาม draw_date ที่ต่อจากงวดปัจจุบัน)
-        next_period <- dbGetQuery(con, 
-                                  "SELECT id FROM lottery_periods 
+      # 1. อัปเดตงวดปัจจุบันให้ 'จบงวดแล้ว'
+      dbExecute(con, 
+                "UPDATE lottery_periods SET status = 'จบงวดแล้ว' WHERE id = $1", 
+                params = list(p_id))
+      
+      # 2. ค้นหา ID ของงวดถัดไป (เรียงตาม draw_date ที่ต่อจากงวดปัจจุบัน)
+      next_period <- dbGetQuery(con, 
+                                "SELECT id FROM lottery_periods 
            WHERE draw_date > (SELECT draw_date FROM lottery_periods WHERE id = $1)
            ORDER BY draw_date ASC LIMIT 1", 
-                                  params = list(p_id))
+                                params = list(p_id))
+      
+      # 3. ถ้าเจองวดถัดไป ให้เปลี่ยน status เป็น 'กำลังเปิดจอง'
+      if (nrow(next_period) > 0) {
+        next_id <- as.integer(next_period$id)
+        dbExecute(con, 
+                  "UPDATE lottery_periods SET status = 'กำลังเปิดจอง' WHERE id = $1", 
+                  params = list(next_id))
         
-        # 3. ถ้าเจองวดถัดไป ให้เปลี่ยน status เป็น 'กำลังเปิดจอง'
-        if (nrow(next_period) > 0) {
-          next_id <- as.integer(next_period$id)
-          dbExecute(con, 
-                    "UPDATE lottery_periods SET status = 'กำลังเปิดจอง' WHERE id = $1", 
-                    params = list(next_id))
-          
-          msg <- "ปิดงวดเก่า และเปิดงวดถัดไปให้แล้วครับ!"
-        } else {
-          msg <- "ปิดงวดเรียบร้อย (ไม่มีงวดถัดไปในระบบ)"
-        }
-        
-        dbCommit(con)
-        poolReturn(con)
-        
-        # ดีดนิ้ว Trigger ให้ทุกอย่างในแอปอัปเดตตามสถานะใหม่ใน DB
-        db_trigger(db_trigger() + 1)
-        f7Toast(text = msg)
-        
-      }, error = function(e) {
-        if(exists("con")) {
-          dbRollback(con)
-          poolReturn(con)
-        }
-        f7Toast(text = paste("เกิดข้อผิดพลาด:", e$message))
-      })
+        msg <- "ปิดงวดเก่า และเปิดงวดถัดไปให้แล้วครับ!"
+      } else {
+        new_created_period <- auto_create_next_period(con, p_id)
+        msg <- paste0("ปิดงวดเรียบร้อย และสร้างงวดใหม่ (", new_created_period$display_name, ") ให้แล้วครับ!")
+        #msg <- "ปิดงวดเรียบร้อย (ไม่มีงวดถัดไปในระบบ)"
+      }
+      
+      dbCommit(con)
+      poolReturn(con)
+      
+      # ดีดนิ้ว Trigger ให้ทุกอย่างในแอปอัปเดตตามสถานะใหม่ใน DB
+      db_trigger(db_trigger() + 1)
+      f7Toast(text = msg)
 
+      # ส่งสัญญาณให้ observeEvent ข้างนอกทำงาน
+      if (!is.null(new_created_period)) {
+        new_period_created_trigger(new_created_period)
+      }
+            
+    }, error = function(e) {
+      if(exists("con")) {
+        dbRollback(con)
+        poolReturn(con)
+      }
+      f7Toast(text = paste("เกิดข้อผิดพลาด:", e$message))
+    })
+    
   })  
+  
+  
+  # 1. คำนวณวันที่งวดถัดไป (1 -> 16 เดือนเดิม, 16 -> 1 เดือนถัดไป)
+  get_next_lottery_date <- function(current_date) {
+    current_date <- as.Date(current_date)
+    day_val <- day(current_date)
+    
+    if (day_val == 1) {
+      # ถ้าเป็นวันที่ 1 ให้ไปวันที่ 16 เดือนเดียวกัน
+      next_date <- make_date(year(current_date), month(current_date), 16)
+    } else {
+      # ถ้าเป็นวันที่ 16 (หรือวันอื่น) ให้ข้ามไปวันที่ 1 ของเดือนถัดไป
+      first_of_this_month <- make_date(year(current_date), month(current_date), 1)
+      next_date <- first_of_this_month %m+% months(1)
+    }
+    return(next_date)
+  }
+  
+  # 2. แปลง Date เป็น display_name ภาษาไทยแบบ Minimal (เช่น "16 ต.ค. 69")
+  format_thai_display_name <- function(date_input) {
+    date_obj <- as.Date(date_input)
+    
+    months_th <- c("ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", 
+                   "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค.")
+    
+    day_num <- day(date_obj)
+    month_name <- months_th[month(date_obj)]
+    year_th <- (year(date_obj) + 543) %% 100 # เอา พ.ศ. 2 หลักสุดท้าย
+    
+    sprintf("%d %s %02d", day_num, month_name, year_th)
+  }
+  
+  # 3. ฟังก์ชัน Auto-Create งวดใหม่ใน DB
+  auto_create_next_period <- function(con, current_p_id) {
+    # ดึง draw_date ของงวดปัจจุบัน
+    curr_info <- dbGetQuery(con, "SELECT draw_date FROM lottery_periods WHERE id = $1", params = list(current_p_id))
+    req(nrow(curr_info) > 0)
+    
+    curr_date <- curr_info$draw_date[1]
+    next_date <- get_next_lottery_date(curr_date)
+    next_display_name <- format_thai_display_name(next_date)
+    
+    # INSERT งวดใหม่ พร้อมตั้ง status เป็น 'กำลังเปิดจอง'
+    res <- dbGetQuery(con, 
+                      "INSERT INTO lottery_periods (draw_date, display_name, status) 
+                     VALUES ($1, $2, 'กำลังเปิดจอง') RETURNING id", 
+                      params = list(next_date, next_display_name))
+    
+    list(
+      id = as.integer(res$id[1]),
+      draw_date = next_date,
+      display_name = next_display_name
+    )
+  }  
+  
+  
+  
   
   
   
@@ -783,12 +899,12 @@ server <- function(input, output, session) {
   session$onSessionEnded(function() {
     stopApp()
   })
-
+  
   
   # f7Login  
   loginData <- f7LoginServer(id = "login")
-
-    
+  
+  
 }
 
 # --- นอก UI/Server ---
