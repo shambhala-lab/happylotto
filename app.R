@@ -9,8 +9,8 @@ library(pool)
 library(RPostgres)
 
 # Global Settings / App Info
-APP_VERSION <- "2.1"
-APP_BUILD   <- "20261003 (452d425)" # Short Commit Hash
+APP_VERSION <- "2.2"
+APP_BUILD   <- "20261005 (452d425)" # Short Commit Hash
 
 
 # ดึงค่า Environment Variables (ถ้าไม่พบ ให้ใช้ค่า fallback ด้านหลัง)
@@ -21,7 +21,7 @@ pool <- dbPool(
   user = Sys.getenv("DB_USER"),
   password = Sys.getenv("DB_PASS"),
   #port = 5434, # test db
-  port = 5432,
+  port = 5432,  # production db
   idleTimeout = 60000, # 10 นาทีปิดท่อ
   minSize = 3,         
   maxSize = 5          
@@ -614,16 +614,24 @@ server <- function(input, output, session) {
     all_nums <- sprintf("%02d", 0:99)
     booked_nums <- data$number
     available_nums <- setdiff(all_nums, booked_nums)
-    avail_sum = paste0("เลขว่าง (", length(available_nums), ")")
-    avail_list <- paste(available_nums, collapse = " - ")
     
-    f7Dialog(
-      title = avail_sum,
-      text = avail_list
-    )
-    
-  })
-  
+    # เช็คว่ามีเลขว่างเหลืออยู่หรือไม่
+    if (length(available_nums) > 0) {
+      avail_sum <- paste0("เลขว่าง (", length(available_nums), " เลข)")
+      avail_list <- paste(available_nums, collapse = " - ")
+      
+      f7Dialog(
+        title = avail_sum,
+        text = avail_list
+      )
+    } else {
+      # กรณีไม่มีเลขว่างเหลือแล้ว (เต็มหมด 100 เลข)
+      f7Dialog(
+        title = "🎉 ยินดีด้วยครับ!",
+        text = "หมายเลขจองครบหมดแล้ว"
+      )
+    }
+  })  
   
   
   # ==========================================
