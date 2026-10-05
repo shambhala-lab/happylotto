@@ -20,8 +20,8 @@ pool <- dbPool(
   dbname = Sys.getenv("DB_NAME"),
   user = Sys.getenv("DB_USER"),
   password = Sys.getenv("DB_PASS"),
-  port = 5434, # test db
-  #port = 5432,
+  #port = 5434, # test db
+  port = 5432,
   idleTimeout = 60000, # 10 นาทีปิดท่อ
   minSize = 3,         
   maxSize = 5          
