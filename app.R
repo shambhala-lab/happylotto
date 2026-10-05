@@ -8,6 +8,10 @@ library(lubridate)
 library(pool)
 library(RPostgres)
 
+# Global Settings / App Info
+APP_VERSION <- "2.1"
+APP_BUILD   <- "20261003 (452d425)" # Short Commit Hash
+
 
 # ดึงค่า Environment Variables (ถ้าไม่พบ ให้ใช้ค่า fallback ด้านหลัง)
 pool <- dbPool(
@@ -16,7 +20,8 @@ pool <- dbPool(
   dbname = Sys.getenv("DB_NAME"),
   user = Sys.getenv("DB_USER"),
   password = Sys.getenv("DB_PASS"),
-  port = 5432,
+  port = 5434, # test db
+  #port = 5432,
   idleTimeout = 60000, # 10 นาทีปิดท่อ
   minSize = 3,         
   maxSize = 5          
@@ -37,6 +42,28 @@ clean_member_name <- function(name) {
 ui <- f7Page(
   title = "ลุ้นหวยกัน เพื่อนปันสุข",
   options = list(theme = "ios", dark = FALSE, color = "green"),
+  
+  # --- เพิ่ม JS และ CSS สำหรับจัดการหน้า Disconnect ---
+  tags$head(
+    tags$style(HTML("
+      /* ซ่อนกล่อง Oops... disconnected สีเทา */
+      #shiny-disconnected-msg {
+        display: none !important;
+      }
+    ")),
+    
+    tags$script(HTML("
+      $(document).on('shiny:disconnected', function(event) {
+        document.body.innerHTML = 
+          '<div style=\"background: #1c1c1e; height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; color: white; font-family: -apple-system, BlinkMacSystemFont, sans-serif; text-align: center; padding: 20px;\">' +
+          '  <div style=\"font-size: 64px; margin-bottom: 20px;\">🔒</div>' +
+          '  <h2 style=\"margin: 0; font-weight: 600; font-size: 22px;\">ปิดการทำงานเรียบร้อยแล้ว</h2>' +
+          '  <p style=\"color: #8e8e93; margin-top: 10px; font-size: 14px; line-height: 1.5;\">Session ปัจจุบันถูกยุติแล้ว<br>ขอบคุณที่ใช้งาน HappyLotto App</p>' +
+          '  <button onclick=\"window.location.reload()\" style=\"margin-top: 30px; padding: 12px 32px; border-radius: 25px; border: none; background: #34c759; color: white; font-size: 16px; font-weight: bold; cursor: pointer; box-shadow: 0 4px 12px rgba(52,199,89,0.3);\">เข้าสู่ระบบอีกครั้ง</button>' +
+          '</div>';
+      });
+    "))
+  ),
   
   # --- เพิ่มหน้า Login เข้าไป ---
   f7Login(id = "login", title = "Welcome", cancellable = TRUE),
@@ -112,6 +139,7 @@ ui <- f7Page(
         f7BlockTitle("จัดการงวดปัจจุบัน"),
         f7List(
           inset = TRUE,
+          mode = "media",
           uiOutput("current_period_settings_ui") # Server จะส่ง ชื่องวดปัจจุบัน + f7DatePicker / f7Text มาโชว์
         ),
         f7Block(
@@ -125,7 +153,7 @@ ui <- f7Page(
           mode = "media",
           f7ListItem(
             title = "HappyLotto App",
-            subtitle = "เวอร์ชัน 1.2.0 (Build 2026)",
+            subtitle = HTML(paste0("เวอร์ชัน ", APP_VERSION, "<br/>Build ", APP_BUILD)),
             media = f7Icon("info_circle")
           )
         ),
@@ -139,8 +167,11 @@ ui <- f7Page(
           uiOutput("db_status_ui")
         ),
         f7Block(
-          f7Button(inputId = "shutdown_app_btn", label = "ปิดการทำงานแอปพลิเคชัน", color = "red", fill = TRUE)
+          f7Button(inputId = "shutdown_app_btn", 
+                   label = "ปิดการทำงานแอปพลิเคชัน",
+                   color = "red", fill = TRUE)
         )
+
       )
       
       
@@ -199,7 +230,7 @@ server <- function(input, output, session) {
     current_period <- get_current_period_name()
     
     f7Card(
-      title = paste0("เลขท้าย 2 ตัว งวดวัน", current_period),
+      title = paste0("เลขท้าย 2 ตัว งวดวันที่ ", current_period),
       f7Badge("ตัวละ 50 บาท", color = "orange"),
       
       br(), br(),
@@ -874,16 +905,110 @@ server <- function(input, output, session) {
   }  
   
   
+  # ==========================================
+  # ส่วนของ SERVER (แท็บที่ 4: การตั้งค่า)
+  # ==========================================  
+  
+  # --- 1.1 แสดงงวดปัจจุบันโดย Reuse ฟังก์ชันเดิมจากแท็บ 1 ---
+  output$current_period_settings_ui <- renderUI({
+    current_period <- get_current_period_name()
+    
+    f7ListItem(
+      header = "งวดปัจจุบัน",
+      title = current_period,
+      media = f7Icon("calendar")
+    )
+  })
+  
+  # --- 1.2 Pop-up Dialog สำหรับแก้ไข display_name ---
+  observeEvent(input$update_period_date_btn, {
+    current_period <- get_current_period_name()
+    
+    f7Dialog(
+      id = "change_period_dialog",
+      title = "แก้ไขข้อมูลงวดปัจจุบัน",
+      type = "prompt",
+      text = paste0("ปัจจุบัน: ", current_period)
+    )
+  })
+  
+  # --- 1.3 เมื่อกดตกลงใน Dialog ให้ UPDATE ลง DB ---
+  observeEvent(input$change_period_dialog, {
+    # รับค่าข้อความที่พิมพ์จาก Modal Prompt
+    req(input$change_period_dialog)
+    new_display <- trimws(input$change_period_dialog)
+    
+    if (nchar(new_display) > 0) {
+      # UPDATE เฉพาะงวดที่ 'กำลังเปิดจอง'
+      dbExecute(
+        pool,
+        "UPDATE lottery_periods SET display_name = $1 WHERE status = 'กำลังเปิดจอง'",
+        params = list(new_display)
+      )
+      
+      # Trigger ให้หน้าจอทุกแท็บอัปเดตข้อมูลใหม่ทันที
+      if (exists("db_trigger")) db_trigger(db_trigger() + 1)
+      
+      f7Toast(
+        text = "อัปเดตข้อมูลงวดเรียบร้อยแล้ว!",
+        position = "bottom",
+        color = "green"
+      )
+    }
+  })
+  
+  
+  # --- 3.1 แสดงสถานะการเชื่อมต่อ Database (ปรับใช้ header เพื่อป้องกัน Error) ---
+  output$db_status_ui <- renderUI({
+    # ทดสอบ Query เช็คการเชื่อมต่อ
+    db_ok <- tryCatch({
+      res <- dbGetQuery(pool, "SELECT 1")
+      is.data.frame(res) && nrow(res) > 0
+    }, error = function(e) {
+      FALSE
+    })
+    
+    if (db_ok) {
+      f7ListItem(
+        header = "Database (PostgreSQL)",
+        title = "สถานะ: เชื่อมต่อปกติ",
+        media = f7Icon("checkmark_alt_circle_fill", style = "color: green;")
+      )
+    } else {
+      f7ListItem(
+        header = "Database (PostgreSQL)",
+        title = "สถานะ: ไม่สามารถเชื่อมต่อได้",
+        media = f7Icon("xmark_circle_fill", style = "color: red;")
+      )
+    }
+  })  
+
+  # --- 3.2 ปุ่มปิดการทำงานแอปพลิเคชัน ---
+  observeEvent(input$shutdown_app_btn, {
+    f7Dialog(
+      id = "confirm_shutdown_dialog",
+      title = "ยืนยันการปิดแอปพลิเคชัน",
+      type = "confirm",
+      text = "คุณต้องการปิดแอปใช่ไหม?"
+    )
+  })
+  
+  # เมื่อผู้ใช้กด OK ใน Dialog ปิดแอป
+  observeEvent(input$confirm_shutdown_dialog, {
+    req(input$confirm_shutdown_dialog)
+    if (isTRUE(input$confirm_shutdown_dialog)) {
+      session$close()
+    }
+  })
+
   # เมื่อ User ปิด Browser ให้หยุดแอปทันที (เพื่อประหยัดชั่วโมง)
   session$onSessionEnded(function() {
     stopApp()
   })
   
- 
   # f7Login  
   loginData <- f7LoginServer(id = "login")
-  
-  
+
 }
 
 # --- นอก UI/Server ---
