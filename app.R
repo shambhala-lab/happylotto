@@ -10,7 +10,7 @@ library(RPostgres)
 
 # Global Settings / App Info
 APP_VERSION <- "2.2"
-APP_BUILD   <- "20261005 (452d425)" # Short Commit Hash
+APP_BUILD   <- "20261005 (4aad4fc)" # Short Commit Hash
 
 
 # ดึงค่า Environment Variables (ถ้าไม่พบ ให้ใช้ค่า fallback ด้านหลัง)
